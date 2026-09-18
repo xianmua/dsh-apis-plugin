@@ -13,27 +13,33 @@ dsh plugin --profile web add dsh-apis-plugin
 安装后重启 `dsh web` 生效。指定版本：
 
 ```sh
-dsh plugin --profile web add dsh-apis-plugin@0.1.5
+dsh plugin --profile web add dsh-apis-plugin@0.1.6
 ```
 
 ## 配置
 
+建议把 `api.cfg` 和 `api_doc.md` 一起放在同一个目录下（如项目的 `config/` 目录），然后在插件配置页把「API配置」指向该目录：
+
+```
+config/
+├── api.cfg      # 接口清单
+└── api_doc.md   # 接口文档
+```
+
 ### 1. api.cfg（接口清单，必需）
 
-在插件配置页指定的 API 目录下创建 `api.cfg`（key=value 行，`#` 注释，UTF-8 编码）：
+key=value 行格式，`#` 注释，UTF-8 编码：
 
 ```ini
 # 接口服务前缀：域名 + nginx 前缀 + 网关路由段
 baseUrl=http://your-host/prod-api
 
-# 接口列表：逗号分隔同行书写
-apis=/users/page,/users/{id}
-
-# 或逐行列举
+# 接口列表：apis= 下面逐行一个接口
 apis=
+  /users/page
+  /users/{id}
   /outline/page
   /outline/detailByNos
-  /basicTargetChar/item/listByTargetCharId
 ```
 
 - `baseUrl`：请求时拼接在接口路径前（改文件即生效，无需重启）
@@ -42,7 +48,7 @@ apis=
 
 ### 2. api_doc.md（接口文档，建议提供）
 
-与 `api.cfg` 同目录。用 `---` 分节，每节描述一个接口，节内用反引号标注接口路径：
+与 `api.cfg` 放在一起。用 `---` 分节，每节描述一个接口，节内用反引号标注接口路径：
 
 ```markdown
 ## 通用说明
