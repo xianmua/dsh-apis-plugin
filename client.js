@@ -1,6 +1,6 @@
 // 浏览器半侧：在「插件配置」标签页为 dsh-apis-plugin 命名空间注册一张展示卡片
-// 接口的增删以 api.cfg 为唯一来源：这里只读展示列表，编辑请改 api.cfg 后点「加载API」重扫
-// API 目录失焦或点「加载API」时自动保存，无页脚按钮
+// 接口的增删以 api.cfg 为唯一来源：这里只读展示列表，编辑请改 api.cfg 后点「扫描」重扫
+// API 目录失焦或点「扫描」时自动保存，无页脚按钮
 // 样式与 DOM 结构对齐原生 PluginCard（li 卡片 + SVG 箭头）
 window.__ModuleLoader__.load({
 	id: "dsh-apis-plugin",
@@ -81,8 +81,8 @@ window.__ModuleLoader__.load({
 		function ApisCard(props) {
 			const state = props.useApisCard((s) => s);
 			const [dirDraft, setDirDraft] = react.useState(null); // 文档目录，null 表示未编辑
-			const [loading, setLoading] = react.useState(false); // 加载API 扫描中
-			const [loaded, setLoaded] = react.useState(false); // 加载API 完成后短暂提示
+			const [loading, setLoading] = react.useState(false); // 扫描进行中
+			const [loaded, setLoaded] = react.useState(false); // 扫描完成后短暂提示
 			const [open, setOpen] = react.useState(false); // 折叠态只显示标题行
 			const ready = state.status === "ready" && state.writable;
 
@@ -93,15 +93,15 @@ window.__ModuleLoader__.load({
 			const shownDir = dirDraft ?? savedDir;
 			const dirDirty = dirDraft !== null && dirDraft !== savedDir;
 
-			/** 目录失焦时自动保存（点「加载API」也会先写入目录） */
+			/** 目录失焦时自动保存（点「扫描」也会先写入目录） */
 			function commitDir() {
 				if (dirDirty && ready) scope.set("apiDir", dirDraft);
 				setDirDraft(null);
 			}
 
-			/** 加载API：把目录写入配置并翻转 scanToken，服务端 watch 重扫 apis.txt 后回写接口列表 */
+			/** 扫描：把目录写入配置并翻转 scanToken，服务端重扫 api.cfg 后回写接口列表；目录为空则清空列表 */
 			async function loadApis() {
-				if (loading || !ready || !shownDir.trim()) return;
+				if (loading || !ready) return;
 				setLoading(true);
 				try {
 					if (dirDirty) await scope.set("apiDir", shownDir.trim());
@@ -143,7 +143,7 @@ window.__ModuleLoader__.load({
 					}),
 					// 展开体：API配置目录行 + 分隔线 + 接口行列表（只读）
 					open && react_jsx_runtime.jsxs("div", { className: "apis-body", children: [
-						// API配置：文档目录（api.cfg / api_doc.md 所在目录，失焦自动保存）+ 加载API 重扫按钮
+						// API配置：文档目录（api.cfg / api_doc.md 所在目录，失焦自动保存）+ 扫描按钮（目录为空则清空列表）
 						react_jsx_runtime.jsxs("div", { className: "apis-row", children: [
 							react_jsx_runtime.jsx("div", { className: "apis-rowLabel apis-rowLabelWide", children: "API配置" }),
 							react_jsx_runtime.jsx("input", {
@@ -151,19 +151,19 @@ window.__ModuleLoader__.load({
 								onChange: (e) => setDirDraft(e.target.value),
 								onBlur: commitDir,
 								onKeyDown: (e) => { if (e.key === "Enter") e.currentTarget.blur(); },
-								placeholder: "api.cfg / api_doc.md 所在目录",
+								placeholder: "api.cfg / api_doc.md 所在目录，留空扫描即清空列表",
 								className: "apis-input",
 							}),
 							react_jsx_runtime.jsx("button", {
-								type: "button", disabled: !ready || loading || !shownDir.trim(),
+								type: "button", disabled: !ready || loading,
 								onClick: loadApis,
-								className: "apis-btn apis-discard", children: loading ? "扫描中…" : "加载API",
+								className: "apis-btn apis-discard", children: loading ? "扫描中…" : "扫描",
 							}),
-							loaded && react_jsx_runtime.jsx("span", { className: "apis-saved", children: "已加载" }),
+							loaded && react_jsx_runtime.jsx("span", { className: "apis-saved", children: "已扫描" }),
 						] }),
 						react_jsx_runtime.jsx("hr", { className: "apis-hr" }),
 						!state.writable && react_jsx_runtime.jsx("span", { className: "apis-description", children: "只读" }),
-						list.length ? list.map(row) : react_jsx_runtime.jsx("span", { className: "apis-empty", children: "暂无接口：请在 API 目录下的 api.cfg 中配置 apis，然后点击「加载API」" }),
+						list.length ? list.map(row) : react_jsx_runtime.jsx("span", { className: "apis-empty", children: "暂无接口：请在 API 目录下的 api.cfg 中配置 apis，然后点击「扫描」" }),
 					] }),
 				],
 			});
