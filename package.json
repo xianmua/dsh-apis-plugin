@@ -1,22 +1,8 @@
 {
   "name": "dsh-apis-plugin",
-  "version": "0.1.1",
+  "version": "0.1.0",
   "description": "通用接口管理插件：把任意一套 HTTP 接口注册成 agent 可用的文档查询与请求双工具",
   "type": "module",
-  "license": "MIT",
-  "author": "xianmua",
-  "repository": {
-    "url": "git+https://github.com/xianmua/dsh-apis-plugin.git",
-    "type": "git"
-  },
-  "keywords": [
-    "dsh",
-    "deepseek-harness",
-    "cordis",
-    "plugin",
-    "api",
-    "tools"
-  ],
   "main": "index.js",
   "exports": {
     ".": "./index.js",

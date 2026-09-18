@@ -7,9 +7,10 @@
         domain: ""
         # 工具名前缀：生成 {prefix}_api_doc / {prefix}_api_request
         toolPrefix: api
-        # apis.txt 与 api_doc.md 所在目录（可选，留空则只用 endpoints）
+        # api.cfg 与 api_doc.md 所在目录（可选，留空则只用 endpoints）
         apiDir: ""
         # 默认接口列表
         endpoints: []
         # 接口服务前缀：域名 + nginx 前缀 + 网关路由段
+        # （也可在 apiDir 下 api.cfg 写 baseUrl=... 覆盖，改文件即生效无需重启）
         baseUrl: ""

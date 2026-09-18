@@ -34,6 +34,8 @@ window.__ModuleLoader__.load({
 			.apis-save{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}
 			.apis-row{display:flex;align-items:center;gap:8px}
 			.apis-rowLabel{width:44px;flex-shrink:0;font-size:13px;color:var(--dsw-alias-label-primary)}
+			.apis-rowLabelWide{width:auto;white-space:nowrap}
+			.apis-hr{width:100%;height:0;border:0;border-top:.5px solid var(--dsw-alias-border-l2);margin:0}
 			.apis-input{box-sizing:border-box;flex:1;min-width:0;font:inherit;color:var(--dsw-alias-label-primary);background:transparent;border:.5px solid var(--dsw-alias-border-l4);border-radius:8px;padding:6px 10px}
 			.apis-remove{appearance:none;font:inherit;font-size:13px;cursor:pointer;background:none;border:none;border-radius:8px;padding:5px 10px;color:var(--dsw-alias-label-tertiary)}
 			.apis-remove:hover:not(:disabled){color:var(--dsw-alias-label-primary)}
@@ -80,23 +82,47 @@ window.__ModuleLoader__.load({
 		function ApisCard(props) {
 			const state = props.useApisCard((s) => s);
 			const [draft, setDraft] = react.useState(null); // string[]，null 表示未编辑
+			const [dirDraft, setDirDraft] = react.useState(null); // 文档目录，null 表示未编辑
 			const [saving, setSaving] = react.useState(false);
+			const [loading, setLoading] = react.useState(false); // 加载API 扫描中
 			const [saved, setSaved] = react.useState(false); // 保存成功后短暂提示
+			const [loaded, setLoaded] = react.useState(false); // 加载API 完成后短暂提示
 			const [open, setOpen] = react.useState(false); // 折叠态只显示标题行
 			const ready = state.status === "ready" && state.writable;
 
 			/** 当前展示的接口列表：编辑中取 draft，否则取已保存值 */
 			const list = draft ?? (state.value?.endpoints ?? []).map(String);
 			const dirty = draft !== null;
+			/** 当前展示的文档目录：编辑中取 dirDraft，否则取已保存值 */
+			const savedDir = state.value?.apiDir ?? "";
+			const shownDir = dirDraft ?? savedDir;
+			const dirDirty = dirDraft !== null && dirDraft !== savedDir;
 
 			async function save() {
-				if (saving || !ready || !dirty) return;
+				if (saving || !ready || (!dirty && !dirDirty)) return;
 				setSaving(true);
-				await scope.set("endpoints", draft);
+				if (dirDirty) await scope.set("apiDir", dirDraft); // 只存配置，扫描交给「加载API」
+				if (dirty) await scope.set("endpoints", draft);
 				setSaving(false);
 				setDraft(null);
+				setDirDraft(null);
 				setSaved(true); // 显示「已保存」提示，2 秒后消失
 				setTimeout(() => setSaved(false), 2000);
+			}
+
+			/** 加载API：把目录写入配置并翻转 scanToken，服务端 watch 重扫 apis.txt 后回写接口列表 */
+			async function loadApis() {
+				if (loading || !ready || !shownDir.trim()) return;
+				setLoading(true);
+				try {
+					if (dirDirty) await scope.set("apiDir", shownDir.trim());
+					await scope.set("scanToken", String(Date.now()));
+					setDirDraft(null);
+					setLoaded(true);
+					setTimeout(() => setLoaded(false), 2000);
+				} finally {
+					setLoading(false);
+				}
 			}
 
 			// 单行：接口N 标签 + 输入框 + 删除按钮
@@ -135,8 +161,25 @@ window.__ModuleLoader__.load({
 							react_jsx_runtime.jsx(Chevron, { open }),
 						],
 					}),
-					// 展开体：接口行列表 + 底部操作条（与原生一致：分隔线 + 右对齐按钮）
+					// 展开体：API配置目录行 + 分隔线 + 接口行列表 + 底部操作条
 					open && react_jsx_runtime.jsxs("div", { className: "apis-body", children: [
+						// API配置：文档目录（apis.txt / api_doc.md 所在目录）+ 加载API 重扫按钮
+						react_jsx_runtime.jsxs("div", { className: "apis-row", children: [
+							react_jsx_runtime.jsx("div", { className: "apis-rowLabel apis-rowLabelWide", children: "API配置" }),
+							react_jsx_runtime.jsx("input", {
+								value: shownDir, disabled: !ready || saving || loading,
+								onChange: (e) => setDirDraft(e.target.value),
+								placeholder: "api.cfg / api_doc.md 所在目录",
+								className: "apis-input",
+							}),
+							react_jsx_runtime.jsx("button", {
+								type: "button", disabled: !ready || saving || loading || !shownDir.trim(),
+								onClick: loadApis,
+								className: "apis-btn apis-discard", children: loading ? "扫描中…" : "加载API",
+							}),
+							loaded && react_jsx_runtime.jsx("span", { className: "apis-saved", children: "已加载" }),
+						] }),
+						react_jsx_runtime.jsx("hr", { className: "apis-hr" }),
 						!state.writable && react_jsx_runtime.jsx("span", { className: "apis-description", children: "只读" }),
 						list.map(row),
 						react_jsx_runtime.jsx("button", {
@@ -148,12 +191,12 @@ window.__ModuleLoader__.load({
 							// 保存成功后的短暂提示（占按钮行左侧）
 							react_jsx_runtime.jsx("span", { className: "apis-saved", children: saved ? "已保存" : "" }),
 							react_jsx_runtime.jsx("button", {
-								type: "button", disabled: !dirty || saving,
-								onClick: () => setDraft(null),
-								className: "apis-btn apis-discard", children: "放弃修改",
+								type: "button", disabled: (!dirty && !dirDirty) || saving,
+								onClick: () => { setDraft(null); setDirDraft(null); },
+							className: "apis-btn apis-discard", children: "放弃修改",
 							}),
 							react_jsx_runtime.jsx("button", {
-								type: "button", disabled: !ready || !dirty || saving,
+								type: "button", disabled: !ready || (!dirty && !dirDirty) || saving,
 								onClick: save, children: saving ? "保存中…" : "保存",
 								className: "apis-btn apis-save",
 							}),

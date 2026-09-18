@@ -6,16 +6,29 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import Schema from '@deepseek-ai/schemastery'
 
-// 读取目录下 apis.txt 作为默认接口列表；支持空行与 # 注释
-function loadApisTxt(dir) {
-  if (!dir) return []
+// 读取目录下 api.cfg（key=value 行，# 注释）：baseUrl 为服务前缀；apis 为接口列表，
+// 支持逗号分隔同行书写，或 apis= 下面逐行一个接口
+function loadApiCfg(dir) {
+  const empty = { apis: [] }
+  if (!dir) return empty
   try {
-    return readFileSync(join(dir, 'apis.txt'), 'utf8')
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line && !line.startsWith('#'))
+    const cfg = { apis: [] }
+    let current = null
+    for (const raw of readFileSync(join(dir, 'api.cfg'), 'utf8').split(/\r?\n/)) {
+      const line = raw.trim()
+      if (!line || line.startsWith('#')) continue
+      const m = line.match(/^([\w-]+)\s*=\s*(.*)$/)
+      if (m) {
+        current = m[1]
+        if (m[2]) cfg[current] = current === 'apis' ? m[2].split(',').map((s) => s.trim()).filter(Boolean) : m[2]
+        continue
+      }
+      // 无 = 的行归属上一个 key（apis 的逐行列举形式）
+      if (current === 'apis') cfg.apis.push(line)
+    }
+    return cfg
   } catch {
-    return []
+    return empty
   }
 }
 
@@ -62,7 +75,7 @@ export function syncClientNs(dir, ns) {
  * @param {string} options.ns               settings 命名空间，须与前端卡片的 NS 一致
  * @param {string} [options.toolPrefix]     工具名前缀默认值，生成 {prefix}_api_doc / {prefix}_api_request，可被 config 覆盖
  * @param {string} [options.domain]         领域名默认值，用于拼接工具描述 prompt，可被 config 覆盖
- * @param {string} [options.apiDir]         apis.txt 与 api_doc.md 所在目录默认值，可被 config 覆盖
+ * @param {string} [options.apiDir]         api.cfg 与 api_doc.md 所在目录默认值，可被 config 覆盖
  * @param {string} [options.defaultBaseUrl] 接口服务前缀默认值（域名 + nginx 前缀 + 网关路由段）
  * @param {string[]} [options.defaultEndpoints] yml 之外的额外默认接口
  */
@@ -74,12 +87,14 @@ export function defineApiPlugin(options) {
     domain: Schema.string().default(domain),
     // 工具名前缀：生成 {prefix}_api_doc / {prefix}_api_request
     toolPrefix: Schema.string().default(toolPrefix),
-    // apis.txt 与 api_doc.md 所在目录（留空则只用 endpoints）
+    // api.cfg 与 api_doc.md 所在目录（留空则只用 endpoints）
     apiDir: Schema.string().default(apiDir),
     endpoints: Schema.array(Schema.string()).default([]),
     // 接口服务前缀：域名 + nginx 前缀 + 网关路由段
     // （接口路径本身已含服务前缀，最终形如 /prod-api/xxx/users/detail）
     baseUrl: Schema.string().default(defaultBaseUrl),
+    // 内部字段：客户端「加载API」按钮改写它触发服务端重扫目录
+    scanToken: Schema.string().default(''),
   })
 
   // 依赖部署挂载的设置服务与工具服务
@@ -89,24 +104,50 @@ export function defineApiPlugin(options) {
     // config 覆盖优先，回退工厂默认值（兼容旧用户层保存值缺字段的情况）
     const prefix = config.toolPrefix || toolPrefix
     const domainName = config.domain || domain
-    const docDir = config.apiDir || apiDir
-
-    // 合并 apis.txt 与 yml 配置作为 base 层默认值（去重）
-    const endpoints = [...new Set([...loadApisTxt(docDir), ...defaultEndpoints, ...(config.endpoints ?? [])])]
+    // yml 侧固定默认接口（扫描 yml 目录 + 工厂默认 + yml 配置），「加载API」重扫时始终保留这部分
+    const ymlApiDir = config.apiDir || apiDir
+    const ymlEndpoints = [...new Set([...loadApiCfg(ymlApiDir).apis, ...defaultEndpoints, ...(config.endpoints ?? [])])]
 
     // 以组合配置为 base 层注册 settings 命名空间，卸载插件时注册随 fiber 一并清理
-    const scope = ctx.settings.register(ns, Config, { base: { ...config, endpoints } })
+    const scope = ctx.settings.register(ns, Config, { base: { ...config, endpoints: ymlEndpoints } })
 
-    // 每次已提交变更后收到通知
+    // 当前生效目录：用户层保存值优先（重启后仍生效），回退部署侧配置
+    let docDir = scope.get()?.apiDir || ymlApiDir
+
+    // 文档按当前生效目录读取；用户层改写 apiDir 后随 watch 刷新
+    let docSections = splitDocSections(loadApiDoc(docDir))
+
+    // 每次已提交变更后收到通知；「加载API」以 scanToken 变化标记，触发目录重扫
+    let lastScanToken = scope.get()?.scanToken ?? ''
     ctx.effect(
-      () => scope.watch(() => {
+      () => {
+        console.log(`[${ns}] watch registering`)
+        return scope.watch((next) => {
+          try {
+            console.log(`[${ns}] watch fired; apiDir=${next.apiDir}, scanToken=${next.scanToken}`)
+            const dir = next.apiDir || apiDir
+        // 目录变化或显式重扫时重读文档
+        if (dir !== docDir || next.scanToken !== lastScanToken) {
+          docDir = dir
+          docSections = splitDocSections(loadApiDoc(dir))
+        }
+        if (next.scanToken !== lastScanToken) {
+          lastScanToken = next.scanToken
+          // 扫描结果 ∪ yml 默认接口，整体接管用户层 endpoints（去重；值未变时不提交，避免循环）
+          const merged = [...new Set([...loadApiCfg(dir).apis, ...ymlEndpoints])]
+          const cur = Array.isArray(next.endpoints) ? next.endpoints : []
+          if (merged.join('\n') !== cur.join('\n')) scope.update({ endpoints: merged })
+        }
         console.log(`${ns}: settings updated`)
-      }),
+          } catch (err) {
+            console.error(`[${ns}] watch handler error:`, err)
+          }
+        })
+      },
       `${ns}: settings watch`,
-    )
+  )
 
     // ---------- agent 工具 ----------
-    const docSections = splitDocSections(loadApiDoc(docDir))
 
     // 当前生效的接口列表（用户层保存值优先，回退默认值）
     function currentEndpoints() {
@@ -114,7 +155,7 @@ export function defineApiPlugin(options) {
         const value = scope.get()
         if (Array.isArray(value?.endpoints) && value.endpoints.length) return value.endpoints
       } catch { /* scope.get 不可用时回退 */ }
-      return endpoints
+      return ymlEndpoints
     }
 
     // 工具 1：查接口文档，让模型了解每个接口的参数与响应（prompt 按领域名拼接）
@@ -158,7 +199,12 @@ export function defineApiPlugin(options) {
           return `接口 ${norm} 不在已配置列表中。可用接口：\n` + list.join('\n')
         }
 
-        const url = new URL(config.baseUrl.replace(/\/+$/, '') + matched)
+        // 服务前缀：api.cfg 优先（改文件即生效，无需重启），回退部署配置
+        const base = loadApiCfg(docDir).baseUrl || scope.get()?.baseUrl || ''
+        if (!base) {
+          return `未配置接口服务前缀 baseUrl。请在文档目录 ${docDir || '(未配置)'} 下新建 api.cfg 写入 baseUrl=http://... ，或在部署配置中设置。`
+        }
+        const url = new URL(base.replace(/\/+$/, '') + matched)
         for (const [k, v] of Object.entries(args.query ?? {})) {
           url.searchParams.set(k, String(v))
         }
@@ -178,7 +224,7 @@ export function defineApiPlugin(options) {
       },
     })
 
-    console.log(`[${ns}] loaded; endpoints=${endpoints.length}, doc sections=${docSections.length}`)
+    console.log(`[${ns}] loaded; endpoints=${ymlEndpoints.length}, doc sections=${docSections.length}`)
   }
 
   return { Config, inject, apply }
