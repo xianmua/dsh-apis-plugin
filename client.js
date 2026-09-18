@@ -1,6 +1,7 @@
 // 浏览器半侧：在「插件配置」标签页为 dsh-apis-plugin 命名空间注册一张展示卡片
 // 接口的增删以 api.cfg 为唯一来源：这里只读展示列表，编辑请改 api.cfg 后点「加载API」重扫
-// 样式与 DOM 结构对齐原生 PluginCard（li 卡片 + SVG 箭头 + footer）
+// API 目录失焦或点「加载API」时自动保存，无页脚按钮
+// 样式与 DOM 结构对齐原生 PluginCard（li 卡片 + SVG 箭头）
 window.__ModuleLoader__.load({
 	id: "dsh-apis-plugin",
 	factory: (require) => {
@@ -26,13 +27,11 @@ window.__ModuleLoader__.load({
 			.apis-description{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}
 			.apis-chevron{color:var(--dsw-alias-label-tertiary);flex:none;transition:transform .16s}
 			.apis-body{border-top:.5px solid var(--dsw-alias-border-l2);margin:0 16px;padding:12px 0 8px;display:grid;gap:10px}
-			.apis-footer{border-top:.5px solid var(--dsw-alias-border-l2);justify-content:flex-end;align-items:center;gap:8px;padding:12px 0 4px;display:flex}
-			.apis-saved{color:var(--dsw-alias-label-tertiary);margin-right:auto;font-size:12px}
+			.apis-saved{color:var(--dsw-alias-label-tertiary);font-size:12px;white-space:nowrap}
 			.apis-btn{appearance:none;font:inherit;cursor:pointer;border:1px solid transparent;border-radius:8px;padding:5px 14px;font-size:13px;line-height:1.5}
 			.apis-btn:disabled{opacity:.4;cursor:default}
 			.apis-discard{border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:0 0}
 			.apis-discard:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed)}
-			.apis-save{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}
 			.apis-row{display:flex;align-items:center;gap:8px}
 			.apis-rowLabel{width:44px;flex-shrink:0;font-size:13px;color:var(--dsw-alias-label-primary)}
 			.apis-rowLabelWide{width:auto;white-space:nowrap}
@@ -82,9 +81,7 @@ window.__ModuleLoader__.load({
 		function ApisCard(props) {
 			const state = props.useApisCard((s) => s);
 			const [dirDraft, setDirDraft] = react.useState(null); // 文档目录，null 表示未编辑
-			const [saving, setSaving] = react.useState(false);
 			const [loading, setLoading] = react.useState(false); // 加载API 扫描中
-			const [saved, setSaved] = react.useState(false); // 保存成功后短暂提示
 			const [loaded, setLoaded] = react.useState(false); // 加载API 完成后短暂提示
 			const [open, setOpen] = react.useState(false); // 折叠态只显示标题行
 			const ready = state.status === "ready" && state.writable;
@@ -96,14 +93,10 @@ window.__ModuleLoader__.load({
 			const shownDir = dirDraft ?? savedDir;
 			const dirDirty = dirDraft !== null && dirDraft !== savedDir;
 
-			async function save() {
-				if (saving || !ready || !dirDirty) return;
-				setSaving(true);
-				await scope.set("apiDir", dirDraft); // 只存目录，扫描交给「加载API」
-				setSaving(false);
+			/** 目录失焦时自动保存（点「加载API」也会先写入目录） */
+			function commitDir() {
+				if (dirDirty && ready) scope.set("apiDir", dirDraft);
 				setDirDraft(null);
-				setSaved(true); // 显示「已保存」提示，2 秒后消失
-				setTimeout(() => setSaved(false), 2000);
 			}
 
 			/** 加载API：把目录写入配置并翻转 scanToken，服务端 watch 重扫 apis.txt 后回写接口列表 */
@@ -148,19 +141,21 @@ window.__ModuleLoader__.load({
 							react_jsx_runtime.jsx(Chevron, { open }),
 						],
 					}),
-					// 展开体：API配置目录行 + 分隔线 + 接口行列表 + 底部操作条
+					// 展开体：API配置目录行 + 分隔线 + 接口行列表（只读）
 					open && react_jsx_runtime.jsxs("div", { className: "apis-body", children: [
-						// API配置：文档目录（apis.txt / api_doc.md 所在目录）+ 加载API 重扫按钮
+						// API配置：文档目录（api.cfg / api_doc.md 所在目录，失焦自动保存）+ 加载API 重扫按钮
 						react_jsx_runtime.jsxs("div", { className: "apis-row", children: [
 							react_jsx_runtime.jsx("div", { className: "apis-rowLabel apis-rowLabelWide", children: "API配置" }),
 							react_jsx_runtime.jsx("input", {
-								value: shownDir, disabled: !ready || saving || loading,
+								value: shownDir, disabled: !ready || loading,
 								onChange: (e) => setDirDraft(e.target.value),
+								onBlur: commitDir,
+								onKeyDown: (e) => { if (e.key === "Enter") e.currentTarget.blur(); },
 								placeholder: "api.cfg / api_doc.md 所在目录",
 								className: "apis-input",
 							}),
 							react_jsx_runtime.jsx("button", {
-								type: "button", disabled: !ready || saving || loading || !shownDir.trim(),
+								type: "button", disabled: !ready || loading || !shownDir.trim(),
 								onClick: loadApis,
 								className: "apis-btn apis-discard", children: loading ? "扫描中…" : "加载API",
 							}),
@@ -169,20 +164,6 @@ window.__ModuleLoader__.load({
 						react_jsx_runtime.jsx("hr", { className: "apis-hr" }),
 						!state.writable && react_jsx_runtime.jsx("span", { className: "apis-description", children: "只读" }),
 						list.length ? list.map(row) : react_jsx_runtime.jsx("span", { className: "apis-empty", children: "暂无接口：请在 API 目录下的 api.cfg 中配置 apis，然后点击「加载API」" }),
-						react_jsx_runtime.jsxs("div", { className: "apis-footer", children: [
-							// 保存成功后的短暂提示（占按钮行左侧）
-							react_jsx_runtime.jsx("span", { className: "apis-saved", children: saved ? "已保存" : "" }),
-							react_jsx_runtime.jsx("button", {
-								type: "button", disabled: !dirDirty || saving,
-								onClick: () => setDirDraft(null),
-							className: "apis-btn apis-discard", children: "放弃修改",
-							}),
-							react_jsx_runtime.jsx("button", {
-								type: "button", disabled: !ready || !dirDirty || saving,
-								onClick: save, children: saving ? "保存中…" : "保存",
-								className: "apis-btn apis-save",
-							}),
-						] }),
 					] }),
 				],
 			});
