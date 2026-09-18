@@ -14,7 +14,9 @@ function loadApiCfg(dir) {
   try {
     const cfg = { apis: [] }
     let current = null
-    for (const raw of readFileSync(join(dir, 'api.cfg'), 'utf8').split(/\r?\n/)) {
+    // 去掉 UTF-8 BOM（Windows 记事本默认会加），否则首个 key 解析失败
+    const text = readFileSync(join(dir, 'api.cfg'), 'utf8').replace(/^\uFEFF/, '')
+    for (const raw of text.split(/\r?\n/)) {
       const line = raw.trim()
       if (!line || line.startsWith('#')) continue
       const m = line.match(/^([\w-]+)\s*=\s*(.*)$/)
@@ -36,7 +38,7 @@ function loadApiCfg(dir) {
 function loadApiDoc(dir) {
   if (!dir) return ''
   try {
-    return readFileSync(join(dir, 'api_doc.md'), 'utf8')
+    return readFileSync(join(dir, 'api_doc.md'), 'utf8').replace(/^\uFEFF/, '')
   } catch {
     return ''
   }
@@ -104,12 +106,15 @@ export function defineApiPlugin(options) {
     // config 覆盖优先，回退工厂默认值（兼容旧用户层保存值缺字段的情况）
     const prefix = config.toolPrefix || toolPrefix
     const domainName = config.domain || domain
-    // yml 侧固定默认接口（扫描 yml 目录 + 工厂默认 + yml 配置），「加载API」重扫时始终保留这部分
+    // 部署侧静态接口（yml config.endpoints + 工厂默认），与 api.cfg 动态读取分离，
+    // 避免「加载API」重扫时把启动时的旧 api.cfg 列表拼回去（导致删掉的接口仍可请求）
     const ymlApiDir = config.apiDir || apiDir
-    const ymlEndpoints = [...new Set([...loadApiCfg(ymlApiDir).apis, ...defaultEndpoints, ...(config.endpoints ?? [])])]
+    const staticEndpoints = [...new Set([...defaultEndpoints, ...(config.endpoints ?? [])])]
+    // 启动时以当前目录 api.cfg 为权威范围，∪ 静态接口作为 base
+    const bootEndpoints = [...new Set([...loadApiCfg(ymlApiDir).apis, ...staticEndpoints])]
 
     // 以组合配置为 base 层注册 settings 命名空间，卸载插件时注册随 fiber 一并清理
-    const scope = ctx.settings.register(ns, Config, { base: { ...config, endpoints: ymlEndpoints } })
+    const scope = ctx.settings.register(ns, Config, { base: { ...config, endpoints: bootEndpoints } })
 
     // 当前生效目录：用户层保存值优先（重启后仍生效），回退部署侧配置
     let docDir = scope.get()?.apiDir || ymlApiDir
@@ -133,8 +138,9 @@ export function defineApiPlugin(options) {
         }
         if (next.scanToken !== lastScanToken) {
           lastScanToken = next.scanToken
-          // 扫描结果 ∪ yml 默认接口，整体接管用户层 endpoints（去重；值未变时不提交，避免循环）
-          const merged = [...new Set([...loadApiCfg(dir).apis, ...ymlEndpoints])]
+          // 以最新 api.cfg 为权威范围 ∪ 静态接口，整体接管用户层 endpoints（去重；值未变时不提交，避免循环）
+          // 用最新读取结果而非启动时的快照，这样从 api.cfg 删掉的接口重扫后即失效
+          const merged = [...new Set([...loadApiCfg(dir).apis, ...staticEndpoints])]
           const cur = Array.isArray(next.endpoints) ? next.endpoints : []
           if (merged.join('\n') !== cur.join('\n')) scope.update({ endpoints: merged })
         }
@@ -155,7 +161,7 @@ export function defineApiPlugin(options) {
         const value = scope.get()
         if (Array.isArray(value?.endpoints) && value.endpoints.length) return value.endpoints
       } catch { /* scope.get 不可用时回退 */ }
-      return ymlEndpoints
+      return bootEndpoints
     }
 
     // 工具 1：查接口文档，让模型了解每个接口的参数与响应（prompt 按领域名拼接）
@@ -224,7 +230,7 @@ export function defineApiPlugin(options) {
       },
     })
 
-    console.log(`[${ns}] loaded; endpoints=${ymlEndpoints.length}, doc sections=${docSections.length}`)
+    console.log(`[${ns}] loaded; endpoints=${bootEndpoints.length}, doc sections=${docSections.length}`)
   }
 
   return { Config, inject, apply }
