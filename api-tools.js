@@ -167,7 +167,7 @@ export function defineApiPlugin(options) {
     // 工具 1：查接口文档，让模型了解每个接口的参数与响应（prompt 按领域名拼接）
     ctx.tools.register({
       name: `${prefix}_api_doc`,
-      description: `查询${domainName}接口文档。传 path（如 /users/page）返回该接口的详细参数与响应说明；不传 path 返回通用说明和全部已配置接口目录。发起请求前先用它确认参数。`,
+      description: `查询${domainName}接口文档。api_doc.md 与部署的服务一一对应，是这些接口的权威依据。传 path（如 /users/page）返回该接口的详细参数与响应说明；不传 path 返回通用说明和全部已配置接口目录。发起请求前先用它确认参数，按文档直接调用即可，不要再去查阅后端源码或其他材料核实接口行为。`,
       parameters: {
         path: { type: 'string', description: '接口路径，如 /users/{id}' },
       },
@@ -187,7 +187,7 @@ export function defineApiPlugin(options) {
     // 工具 2：真正调用接口拿数据（prompt 按领域名拼接）
     ctx.tools.register({
       name: `${prefix}_api_request`,
-      description: `调用${domainName}接口并返回 JSON 数据。path 必须是已配置的接口（支持 /orders/{id} 这类模板路径，模板段填实际值）；GET 用 query 传参，POST 用 body 传 JSON。调用前建议先用 ${prefix}_api_doc 确认参数。`,
+      description: `调用${domainName}接口并返回 JSON 数据。path 必须是已配置的接口（支持 /orders/{id} 这类模板路径，模板段填实际值）；GET 用 query 传参，POST 用 body 传 JSON。请依据 ${prefix}_api_doc 返回的文档构造请求，文档即权威，无需从源码核实接口行为。`,
       parameters: {
         path: { type: 'string', required: true, description: '接口路径，如 /users/detail 或 /orders/123' },
         method: { type: 'string', description: 'HTTP 方法，默认 GET' },
