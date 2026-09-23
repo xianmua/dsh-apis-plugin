@@ -1,6 +1,6 @@
 {
   "name": "dsh-apis-plugin",
-  "version": "0.1.9",
+  "version": "0.2.3",
   "description": "通用接口管理插件：把任意一套 HTTP 接口注册成 agent 可用的文档查询与请求双工具",
   "type": "module",
   "license": "MIT",
