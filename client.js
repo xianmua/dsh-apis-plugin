@@ -1,17 +1,17 @@
-// 浏览器半侧：在「插件配置」标签页为 dsh-apis-plugin 命名空间注册一张展示卡片
+// 浏览器半侧：在「插件」页的本插件详情页注册一张展示卡片
 // 接口的增删以 cfg 文件为唯一来源：这里只读展示集合手风琴，编辑请改 cfg 后点「扫描」重扫
-// API 目录失焦或点「扫描」时自动保存，无页脚按钮
+// API 目录失焦或点「扫描」时经 configForms 表单写入（DSH 0.1.7+ 的 plugins.bundle.config 槽位），无页脚按钮
 window.__ModuleLoader__.load({
 	id: "dsh-apis-plugin",
 	factory: (require) => {
 		const { jsx, jsxs } = require("react/jsx-runtime");
 		const react = require("react");
 
-		/** 本卡片编辑的 settings 命名空间，由宿主侧 index.js 按 cordis.patch.yml 的 id 自动回写 */
+		/** 本卡片读写的 settings 命名空间，须与宿主侧 index.js 按 cordis.patch.yml 的 id 回写一致（亦即 Host 插件条目 id） */
 		const NS = "dsh-apis-plugin";
 
-		/** bind 后的命名空间 scope，写入经由它进行（apply 时赋值） */
-		let scope;
+		/** bind 后的配置表单（apply 时赋值）：读快照、写字段都经由它 */
+		let form;
 
 		// 精简样式（类名自持，不依赖原生卡片哈希类）
 		const css = `
@@ -131,16 +131,18 @@ window.__ModuleLoader__.load({
 				] });
 			};
 
-			/** 扫描：目录有改动先落盘，再翻转 scanToken 让服务端重扫 cfg 并回写集合；目录为空则清空列表 */
+			/** 扫描：目录有改动先落盘，再写 scanToken 触发配置变更重应用，服务端重扫 cfg 并把集合写回；目录为空则清空列表 */
 			async function scan() {
-				if (loading || !ready) return;
+				if (loading || !ready || !form) return;
 				setLoading(true);
 				try {
-					if (dirDirty) await scope.set("apiDir", shownDir.trim());
-					await scope.set("scanToken", String(Date.now()));
+					if (dirDirty) await form.set("apiDir", shownDir.trim());
+					await form.set("scanToken", String(Date.now()));
 					setDirDraft(null);
 					setLoaded(true);
 					setTimeout(() => setLoaded(false), 2000);
+				} catch {
+					// 写入被拒（如 revision 冲突恢复失败）时静默结束，避免 unhandled rejection
 				} finally {
 					setLoading(false);
 				}
@@ -167,7 +169,7 @@ window.__ModuleLoader__.load({
 							value: shownDir, disabled: !ready || loading,
 							onChange: (e) => setDirDraft(e.target.value),
 							onBlur: () => {
-								if (dirDirty && ready) scope.set("apiDir", dirDraft);
+								if (dirDirty && ready && form) form.set("apiDir", dirDraft).catch(() => {});
 								setDirDraft(null);
 							},
 							onKeyDown: (e) => e.key === "Enter" && e.currentTarget.blur(),
@@ -190,19 +192,19 @@ window.__ModuleLoader__.load({
 			] });
 		}
 
-		/** 需要的浏览器侧服务 */
-		const inject = ["slots", "settingsScope"];
+		/** 需要的浏览器侧服务：configForms 由 ui-settings 提供，封装 Host settings 的读快照与写字段 */
+		const inject = ["slots", "configForms"];
 
 		/**
-		 * 以命名空间为 key 注册到 settings.plugin.item 槽位：
-		 * 「插件配置」标签页会为每个被服务且被认领的命名空间渲染一张卡片
+		 * 以本插件包名为 key 注册到 plugins.bundle.config 槽位：
+		 * DSH 0.1.7+ 的「插件」页会把 keyed 槽位的卡片渲染在对应包的详情页配置区
 		 */
 		function apply(ctx) {
-			scope = ctx.settingsScope.bind({ namespace: NS });
-			const store = createStore(scope.getSnapshot());
-			ctx.effect(() => scope.subscribe(() => store.set(scope.getSnapshot())));
-			ctx.effect(() => ctx.slots.inject("settings.plugin.item", () => ctx.slots.register({
-				name: "settings.plugin.item",
+			form = ctx.configForms.get(NS);
+			const store = createStore(form.getSnapshot());
+			ctx.effect(() => form.subscribe(() => store.set(form.getSnapshot())));
+			ctx.effect(() => ctx.slots.inject("plugins.bundle.config", () => ctx.slots.register({
+				name: "plugins.bundle.config",
 				key: NS,
 				inject: () => ({ hooks: { apisCard: store } }),
 			}, ApisCard)));

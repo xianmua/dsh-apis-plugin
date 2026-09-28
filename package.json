@@ -1,6 +1,6 @@
 {
   "name": "dsh-apis-plugin",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "通用接口管理插件：把任意一套 HTTP 接口注册成 agent 可用的文档查询与请求双工具",
   "type": "module",
   "license": "MIT",
@@ -18,6 +18,9 @@
     "tools"
   ],
   "main": "index.js",
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-rc.2"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js"
@@ -37,6 +40,6 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/schemastery": "^3.18.4"
   }
 }

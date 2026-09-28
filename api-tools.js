@@ -1,6 +1,8 @@
 // 可复用的「接口工具插件」工厂：把任意一套 HTTP 接口注册成 agent 的 {prefix}_api_doc / {prefix}_api_request 双工具
 // 领域差异（settings 命名空间、工具名前缀、领域名、文档目录、baseUrl、默认接口列表）由调用方注入，
 // 其中 domain / toolPrefix / apiDir 也可在部署侧 cordis.patch.yml 的 config 里覆盖
+// DSH 0.1.7+：插件 Config 即设置表单，apiDir / scanToken / collections 声明为 volatile 字段；
+// 服务端扫描结果经 ctx.settings.update 写回，客户端卡片经 configForms 表单读写
 import { readFileSync, writeFileSync, readdirSync } from 'node:fs'
 import { join, dirname, basename } from 'node:path'
 import Schema from '@deepseek-ai/schemastery'
@@ -103,6 +105,11 @@ export function syncClientNs(dir, ns) {
   if (updated !== code) writeFileSync(file, updated)
 }
 
+/** 取 volatile 配置引用的当前快照；非引用原样返回 */
+function val(v) {
+  return v !== null && typeof v === 'object' && typeof v.get === 'function' ? v.get() : v
+}
+
 /**
  * 构造一个可被 cordis 直接加载的插件模块：{ Config, inject, apply }
  * @param {object} options
@@ -116,60 +123,76 @@ export function syncClientNs(dir, ns) {
 export function defineApiPlugin(options) {
   const { ns, toolPrefix = 'api', domain = '', apiDir = '', defaultBaseUrl = '', defaultEndpoints = [] } = options
 
+  // DSH 0.1.7 写回通道：扫描结果要写回 settings（进 profile patch）供客户端卡片展示，
+  // 但 HMR 事务期间（loader/volatile-update 事件、live 重载触发的重应用都在事务内）禁止再开
+  // 写事务（"HMR transactions cannot be nested"），且事务的 AsyncLocalStorage 会沿定时器等异步链
+  // 传播、无法用 defer 逃逸。启动时的首次 apply 不在事务内，故写回定时器只在首次 apply 时创建，
+  // 其回调永远不带事务上下文；apply / 事件回调只置 pending 标记与待写内容，由定时器落盘。
+  let flushState = null // { ctx, config, serialized }
+  let flushPending = false
+  let flushStarted = false
+
   const Config = Schema.object({
     domain: Schema.string().default(domain), // 领域名：拼进工具描述 prompt
     toolPrefix: Schema.string().default(toolPrefix), // 工具名前缀：生成 {prefix}_api_doc / {prefix}_api_request
-    apiDir: Schema.string().default(apiDir), // cfg 与 api_doc.md 所在目录（留空则只用 endpoints）
-    endpoints: Schema.array(Schema.string()).default([]),
+    apiDir: Schema.string().default(apiDir).volatile(), // cfg 与 api_doc.md 所在目录（留空则只用 endpoints）；客户端卡片可写
+    endpoints: Schema.array(Schema.string()).default([]), // 部署侧固定接口（yml config 注入，不随扫描回写）
     baseUrl: Schema.string().default(defaultBaseUrl), // 接口服务前缀（路径本身已含服务前缀）
-    scanToken: Schema.string().default(''), // 内部字段：客户端「扫描」按钮改写它触发服务端重扫
-    collections: Schema.string().default(''), // 内部字段：扫描到的集合 JSON [{name, baseUrl, apis}]，客户端只读展示
+    scanToken: Schema.string().default('').volatile(), // 内部字段：客户端「扫描」按钮改写它触发配置变更重应用
+    collections: Schema.string().default('').volatile(), // 内部字段：扫描到的集合 JSON [{name, baseUrl, apis}]，客户端只读展示
   })
 
-  const inject = ['settings', 'tools']
+  const inject = ['tools', 'settings']
 
   function apply(ctx, config) {
     const prefix = config.toolPrefix || toolPrefix
     const domainName = config.domain || domain
-    const ymlApiDir = config.apiDir || apiDir
-    // 部署侧静态接口（yml config.endpoints + 工厂默认），与 cfg 动态读取分离，避免重扫时把旧列表拼回去
+    // DSH 0.1.7：volatile 字段（apiDir/scanToken/collections）在 config 里是稳定 Volatile 引用，
+    // 值更新不重跑 apply，而是原地写入引用并发出 loader/volatile-update 事件；
+    // .get() 取当前快照，事件回调里重扫即可让「扫描」与目录修改实时生效
+    // 部署侧固定接口（yml config.endpoints + 工厂默认）；cfg 扫描结果只落在 collections，二者运行时取并集
     const staticEndpoints = [...new Set([...defaultEndpoints, ...(config.endpoints ?? [])])]
     // 集合持久化为 JSON（客户端只读展示；文档分节不落盘）
     const plain = (cs) => JSON.stringify(cs.map(({ name, title, baseUrl, apis }) => ({ name, title, baseUrl, apis })))
     const mergedEndpoints = (cs) => [...new Set([...cs.flatMap((c) => c.apis), ...staticEndpoints])]
 
-    const bootCollections = loadCollections(ymlApiDir)
-    // 以组合配置为 base 层注册 settings 命名空间，卸载插件时注册随 fiber 一并清理
-    const scope = ctx.settings.register(ns, Config, { base: { ...config, endpoints: mergedEndpoints(bootCollections), collections: plain(bootCollections) } })
+    // 按当前 apiDir 重扫 cfg；结果与配置不一致时经 settings.update 写回 profile patch（写回会触发
+    // 一次 volatile 更新，下一轮扫描结果与配置一致即收敛，不会循环）。
+    // 写回不在当前调用栈直接执行：loader/volatile-update 事件与 live 重载的重应用都在 HMR 事务内，
+    // 事务内再开写事务会被拒绝，故只置 pending 标记，由首次 apply 创建的定时器（事务外）落盘
+    function rescan() {
+      const dir = val(config.apiDir) || apiDir
+      const cs = loadCollections(dir)
+      const serialized = plain(cs)
+      if (serialized !== val(config.collections)) {
+        flushState = { ctx, config, serialized }
+        flushPending = true
+      }
+      return cs
+    }
 
-    // 当前生效目录与集合：用户层保存值优先（重启后仍生效），回退部署侧配置
-    let docDir = scope.get()?.apiDir || ymlApiDir
-    let collections = loadCollections(docDir)
-    let lastScanToken = scope.get()?.scanToken ?? ''
+    // 写回定时器只在首次 apply 创建（boot 的 apply 不在 HMR 事务内，其回调永无事务上下文）
+    if (!flushStarted) {
+      flushStarted = true
+      setInterval(() => {
+        if (!flushPending) return
+        flushPending = false
+        const { ctx, config, serialized } = flushState
+        if (serialized === val(config.collections)) return
+        ctx.settings.update(ns, { collections: serialized }).catch((err) => {
+          console.error(`[${ns}] settings sync error:`, err)
+        })
+      }, 50)
+    }
 
-    // 每次已提交变更后收到通知；「扫描」以 scanToken 变化标记，触发目录重扫并整体接管 endpoints / collections
-    ctx.effect(
-      () => scope.watch((next) => {
-        try {
-          const dir = next.apiDir || apiDir
-          if (dir !== docDir || next.scanToken !== lastScanToken) {
-            docDir = dir
-            collections = loadCollections(dir)
-          }
-          if (next.scanToken !== lastScanToken) {
-            lastScanToken = next.scanToken
-            const patch = {}
-            const merged = mergedEndpoints(collections)
-            if (merged.join('\n') !== (Array.isArray(next.endpoints) ? next.endpoints : []).join('\n')) patch.endpoints = merged
-            if (plain(collections) !== next.collections) patch.collections = plain(collections)
-            if (Object.keys(patch).length) scope.update(patch)
-          }
-        } catch (err) {
-          console.error(`[${ns}] watch handler error:`, err)
-        }
-      }),
-      `${ns}: settings watch`,
-    )
+    let collections = rescan()
+    ctx.effect(() => ctx.on('loader/volatile-update', () => {
+      try {
+        collections = rescan()
+      } catch (err) {
+        console.error(`[${ns}] rescan error:`, err)
+      }
+    }), `${ns}: volatile rescan`)
 
     // 已配置接口目录（按集合分组展示，title 说明集合用途；部署侧静态接口不在任何集合时单独一组）
     function catalogText() {
@@ -197,13 +220,13 @@ export function defineApiPlugin(options) {
       if (hits.length > 1) return { ambiguous: hits }
       if (hits.length === 1) return { c: hits[0], path: norm }
       if (staticEndpoints.some((e) => matchEndpoint(norm, e))) {
-        return { c: { name: '_static', baseUrl: scope.get()?.baseUrl || '', apis: staticEndpoints, sections: [] }, path: norm }
+        return { c: { name: '_static', baseUrl: config.baseUrl || '', apis: staticEndpoints, sections: [] }, path: norm }
       }
       return null
     }
 
     // 集合的服务前缀：实时重读该集合的 cfg 文件（改文件即生效，无需重启），回退扫描快照
-    const baseUrlOf = (c) => c.name === '_static' ? scope.get()?.baseUrl || '' : loadCfgFile(c.file).baseUrl || c.baseUrl || ''
+    const baseUrlOf = (c) => c.name === '_static' ? config.baseUrl || '' : loadCfgFile(c.file).baseUrl || c.baseUrl || ''
     const ambiguousMsg = (norm, hits) => `接口 ${norm} 在多个集合中命中（${hits.map((c) => c.name).join('、')}），请用「集合名/路径」精确指定，如：${hits[0].name}${norm}`
     const normPath = (p) => ('/' + p.trim().replace(/^\/+/, '')).split('?')[0]
 
@@ -280,7 +303,7 @@ export function defineApiPlugin(options) {
       },
     })
 
-    console.log(`[${ns}] loaded; endpoints=${mergedEndpoints(bootCollections).length}, collections=${bootCollections.map((c) => c.name).join(',') || '(无)'}`)
+    console.log(`[${ns}] loaded; apiDir=${val(config.apiDir) || '(未配置)'}, endpoints=${mergedEndpoints(collections).length}, collections=${collections.map((c) => c.name).join(',') || '(无)'}`)
   }
 
   return { Config, inject, apply }
