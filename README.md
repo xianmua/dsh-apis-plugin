@@ -11,7 +11,7 @@
 ## 安装
 
 ```sh
-dsh plugin --profile web add dsh-apis-plugin@0.3.0
+dsh plugin --profile web add dsh-apis-plugin@0.3.1
 ```
 
 ## 配置
@@ -68,7 +68,7 @@ apis=
 
 ## 使用
 
-### Web UI（设置 → 插件 → 插件详情页）
+### Web UI（设置 → 接口管理）
 
 | 操作 | 说明 |
 |---|---|

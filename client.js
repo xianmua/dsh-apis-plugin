@@ -1,29 +1,26 @@
-// 浏览器半侧：在「插件」页的本插件详情页注册一张展示卡片
+// 浏览器半侧：在设置弹窗注册「接口管理」菜单项（DSH 0.1.7+ 的 settings.section 槽位）
 // 接口的增删以 cfg 文件为唯一来源：这里只读展示集合手风琴，编辑请改 cfg 后点「扫描」重扫
-// API 目录失焦或点「扫描」时经 configForms 表单写入（DSH 0.1.7+ 的 plugins.bundle.config 槽位），无页脚按钮
+// API 目录失焦或点「扫描」时经 configForms 表单写入，由宿主持久化到 profile 的 cordis.patch.yml
 window.__ModuleLoader__.load({
 	id: "dsh-apis-plugin",
 	factory: (require) => {
 		const { jsx, jsxs } = require("react/jsx-runtime");
 		const react = require("react");
 
-		/** 本卡片读写的 settings 命名空间，须与宿主侧 index.js 按 cordis.patch.yml 的 id 回写一致（亦即 Host 插件条目 id） */
+		/** 本设置页读写的 settings 命名空间，须与宿主侧 index.js 按 cordis.patch.yml 的 id 回写一致（亦即 Host 插件条目 id） */
 		const NS = "dsh-apis-plugin";
 
-		/** bind 后的配置表单（apply 时赋值）：读快照、写字段都经由它 */
+		/** bind 后的配置表单与快照 store（apply 时赋值）：读快照、写字段都经由它 */
 		let form;
+		let store;
 
 		// 精简样式（类名自持，不依赖原生卡片哈希类）
 		const css = `
-			.apis-card{list-style:none;border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);border-radius:16px;transition:border-color .16s}
-			.apis-card:hover{border-color:var(--dsw-alias-label-dimmed)}
-			.apis-header{width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:0 0;border:0;display:flex;align-items:center;gap:12px;padding:14px 16px}
+			.apis-section{display:grid;gap:12px;align-content:start;padding:4px 2px}
 			.apis-headText{flex:1;display:flex;flex-direction:column;gap:4px;min-width:0}
-			.apis-title{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4}
 			.apis-desc,.apis-count,.apis-empty{color:var(--dsw-alias-label-tertiary);font-size:13px}
 			.apis-count{font-size:12px;flex:none;white-space:nowrap}
 			.apis-chevron{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .16s}
-			.apis-body{border-top:.5px solid var(--dsw-alias-border-l2);margin:0 16px;padding:12px 0 8px;display:grid;gap:10px}
 			.apis-row,.apis-item{display:flex;align-items:center;gap:8px;min-width:0}
 			.apis-label{flex:none;font-size:13px;color:var(--dsw-alias-label-primary);white-space:nowrap}
 			.apis-input{flex:1;min-width:0;box-sizing:border-box;font:inherit;color:var(--dsw-alias-label-primary);background:transparent;border:.5px solid var(--dsw-alias-border-l4);border-radius:8px;padding:6px 10px}
@@ -74,12 +71,11 @@ window.__ModuleLoader__.load({
 			});
 		}
 
-		function ApisCard(props) {
-			const state = props.useApisCard((s) => s);
+		function ApisSection() {
+			const state = react.useSyncExternalStore(store.subscribe, store.getSnapshot);
 			const [dirDraft, setDirDraft] = react.useState(null); // 文档目录，null 表示未编辑
 			const [loading, setLoading] = react.useState(false); // 扫描进行中
 			const [loaded, setLoaded] = react.useState(false); // 扫描完成后短暂提示
-			const [open, setOpen] = react.useState(false); // 卡片折叠态
 			const [openGroups, setOpenGroups] = react.useState({}); // 集合手风琴展开态（key: 集合名）
 			const ready = state.status === "ready" && state.writable;
 
@@ -148,66 +144,50 @@ window.__ModuleLoader__.load({
 				}
 			}
 
-			return jsxs("li", { className: "apis-card", children: [
-				// 折叠头：标题 + 描述 + 箭头，点击切换展开
-				jsxs("button", {
-					type: "button", className: "apis-header", "aria-expanded": open,
-					onClick: () => setOpen((v) => !v),
-					children: [
-						jsxs("div", { className: "apis-headText", children: [
-							jsx("span", { className: "apis-title", children: "通用接口管理插件" }),
-							jsx("span", { className: "apis-desc", children: "接口集合（来源：cfg 的 host 字段）" }),
-						] }),
-						jsx(Chevron, { open }),
-					],
-				}),
-				// 展开体：API配置目录行 + 集合手风琴（无集合时回退平铺列表）
-				open && jsxs("div", { className: "apis-body", children: [
-					jsxs("div", { className: "apis-row", children: [
-						jsx("div", { className: "apis-label", children: "API配置" }),
-						jsx("input", {
-							value: shownDir, disabled: !ready || loading,
-							onChange: (e) => setDirDraft(e.target.value),
-							onBlur: () => {
-								if (dirDirty && ready && form) form.set("apiDir", dirDraft).catch(() => {});
-								setDirDraft(null);
-							},
-							onKeyDown: (e) => e.key === "Enter" && e.currentTarget.blur(),
-							placeholder: "集合父目录（扫描各子文件夹下的 *.cfg，以其中 host 为集合名），留空扫描即清空列表",
-							className: "apis-input",
-						}),
-						jsx("button", {
-							type: "button", disabled: !ready || loading, onClick: scan,
-							className: "apis-btn", children: loading ? "扫描中…" : "扫描",
-						}),
-						loaded && jsx("span", { className: "apis-count", children: "已扫描" }),
-					] }),
-					!state.writable && jsx("span", { className: "apis-desc", children: "只读" }),
-					groups.length
-						? groups.map(group)
-						: list.length
-							? list.map(row)
-							: jsx("span", { className: "apis-empty", children: "暂无接口：请在 API 目录下的各集合 cfg 文件中配置 host、baseUrl 与 apis，然后点击「扫描」" }),
+			// 设置页主体：API配置目录行 + 集合手风琴（无集合时回退平铺列表）
+			return jsxs("div", { className: "apis-section", children: [
+				jsxs("div", { className: "apis-row", children: [
+					jsx("div", { className: "apis-label", children: "API配置" }),
+					jsx("input", {
+						value: shownDir, disabled: !ready || loading,
+						onChange: (e) => setDirDraft(e.target.value),
+						onBlur: () => {
+							if (dirDirty && ready && form) form.set("apiDir", dirDraft).catch(() => {});
+							setDirDraft(null);
+						},
+						onKeyDown: (e) => e.key === "Enter" && e.currentTarget.blur(),
+						placeholder: "集合父目录（扫描各子文件夹下的 *.cfg，以其中 host 为集合名），留空扫描即清空列表",
+						className: "apis-input",
+					}),
+					jsx("button", {
+						type: "button", disabled: !ready || loading, onClick: scan,
+						className: "apis-btn", children: loading ? "扫描中…" : "扫描",
+					}),
+					loaded && jsx("span", { className: "apis-count", children: "已扫描" }),
 				] }),
+				!state.writable && jsx("span", { className: "apis-desc", children: "只读" }),
+				groups.length
+					? groups.map(group)
+					: list.length
+						? list.map(row)
+						: jsx("span", { className: "apis-empty", children: "暂无接口：请在 API 目录下的各集合 cfg 文件中配置 host、baseUrl 与 apis，然后点击「扫描」" }),
 			] });
 		}
 
 		/** 需要的浏览器侧服务：configForms 由 ui-settings 提供，封装 Host settings 的读快照与写字段 */
 		const inject = ["slots", "configForms"];
 
-		/**
-		 * 以本插件包名为 key 注册到 plugins.bundle.config 槽位：
-		 * DSH 0.1.7+ 的「插件」页会把 keyed 槽位的卡片渲染在对应包的详情页配置区
-		 */
+		/** 注册设置弹窗的「接口管理」菜单项：settings.section 列表槽位，菜单取 {id, order, label}，选中后渲染组件 */
 		function apply(ctx) {
 			form = ctx.configForms.get(NS);
-			const store = createStore(form.getSnapshot());
+			store = createStore(form.getSnapshot());
 			ctx.effect(() => form.subscribe(() => store.set(form.getSnapshot())));
-			ctx.effect(() => ctx.slots.inject("plugins.bundle.config", () => ctx.slots.register({
-				name: "plugins.bundle.config",
-				key: NS,
-				inject: () => ({ hooks: { apisCard: store } }),
-			}, ApisCard)));
+			ctx.effect(() => ctx.slots.inject("settings.section", () => ctx.slots.register({
+				name: "settings.section",
+				id: "dsh-apis-plugin",
+				order: 30,
+				label: "接口管理",
+			}, ApisSection)));
 		}
 
 		return { apply, inject };
