@@ -171,17 +171,23 @@ export function defineApiPlugin(options) {
       return cs
     }
 
-    // 写回定时器只在首次 apply 创建（boot 的 apply 不在 HMR 事务内，其回调永无事务上下文）
+    // 写回定时器只在首次 apply 创建（boot 的 apply 不在 HMR 事务内，其回调永无事务上下文）；
+    // flushing 锁保证写回串行——上一笔 update 完成前不放行下一笔，避免乱序覆盖
     if (!flushStarted) {
       flushStarted = true
-      setInterval(() => {
-        if (!flushPending) return
+      let flushing = false
+      setInterval(async () => {
+        if (!flushPending || flushing) return
         flushPending = false
+        flushing = true
         const { ctx, config, serialized } = flushState
-        if (serialized === val(config.collections)) return
-        ctx.settings.update(ns, { collections: serialized }).catch((err) => {
+        try {
+          if (serialized !== val(config.collections)) await ctx.settings.update(ns, { collections: serialized })
+        } catch (err) {
           console.error(`[${ns}] settings sync error:`, err)
-        })
+        } finally {
+          flushing = false
+        }
       }, 50)
     }
 
